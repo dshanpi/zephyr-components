@@ -39,11 +39,11 @@ config SAMPLE_MIRROR_SERVER_FILE
 
 config SAMPLE_MIRROR_SERVER_VERSION
 	string "Version of that server"
-	default "3.3.1"
+	default "5.0.1"
 
 config SAMPLE_MIRROR_MAX_SIZE
 	int "Longest side of the picture in pixels"
-	default 1024
+	default 768
 
 config SAMPLE_MIRROR_MAX_FPS
 	int "Frame rate limit"
@@ -51,6 +51,6 @@ config SAMPLE_MIRROR_MAX_FPS
 
 config SAMPLE_MIRROR_BIT_RATE
 	int "Video bit rate"
-	default 4000000
+	default 2000000
 
 source "Kconfig.zephyr"

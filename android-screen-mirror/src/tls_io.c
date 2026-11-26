@@ -61,7 +61,13 @@ static int wait_fd(struct tls_io *t, short events, int timeout_ms)
 
 int tls_io_start(struct tls_io *t, int fd, int timeout_ms)
 {
-	static const int suites[] = {MBEDTLS_TLS1_3_AES_128_GCM_SHA256, 0};
+	static const int suites[] = {
+#if defined(MBEDTLS_TLS1_3_CHACHA20_POLY1305_SHA256)
+		MBEDTLS_TLS1_3_CHACHA20_POLY1305_SHA256,
+#endif
+		MBEDTLS_TLS1_3_AES_128_GCM_SHA256,
+		0,
+	};
 	static const uint16_t sigalgs[] = {
 		MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256,
 		MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA384,
@@ -126,6 +132,7 @@ int tls_io_start(struct tls_io *t, int fd, int timeout_ms)
 		}
 	}
 	t->up = true;
+	printk("tls: connected (%s)\n", mbedtls_ssl_get_ciphersuite(&t->ssl));
 
 	return 0;
 fail_tls:

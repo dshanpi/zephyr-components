@@ -32,7 +32,7 @@
 
 #define PACKET_MAX	(1024 * 1024)
 /* pictures are thrown away while more than this is waiting to be decoded */
-#define BACKLOG_DROP	(96 * 1024)
+#define BACKLOG_DROP	(24 * 1024)
 #define REPORT_MS	5000
 
 static FATFS fat_fs;
@@ -448,6 +448,12 @@ static int run_session(uint8_t *pkt, const char *host, uint16_t port, bool tls)
 				break;
 			}
 		}
+		if (!(flags & SCRCPY_PACKET_CONFIG)) {
+			static const uint8_t aud[6] = {0x00, 0x00, 0x00, 0x01, 0x09, 0x10};
+			size_t aud_used = 0;
+
+			(void)vdec_stream_feed(vdec_dev, stream, aud, sizeof(aud), -1, &aud_used);
+		}
 		drain(&s);
 		t_decode_us += (uint32_t)k_cyc_to_us_floor64(k_cycle_get_32() - c0);
 
@@ -464,10 +470,11 @@ static int run_session(uint8_t *pkt, const char *host, uint16_t port, bool tls)
 			int ms = (int)(k_uptime_get() - last_report);
 
 			printk("mirror: %u packets (%d.%02d/s), %u shown, %u dropped, %u KB/s, "
-			       "decode %u ms per %d ms\n",
+			       "decode %u ms per %d ms, q %u KB\n",
 			       report_frames, report_frames * 1000 / ms,
 			       (report_frames * 100000 / ms) % 100, shown_count, dropped_count,
-			       bytes / ms, t_decode_us / 1000, ms);
+			       bytes / ms, t_decode_us / 1000, ms,
+			       (unsigned int)(scrcpy_video_backlog(&s) / 1024U));
 			report_frames = bytes = t_decode_us = 0;
 			last_report = k_uptime_get();
 		}

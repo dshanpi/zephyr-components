@@ -23,8 +23,10 @@
 #define CTRL_INJECT_KEYCODE	0
 #define CTRL_INJECT_TOUCH	2
 
-#define PACKET_FLAG_CONFIG	BIT64(63)
-#define PACKET_FLAG_KEY_FRAME	BIT64(62)
+#define PACKET_FLAG_SESSION	BIT64(63)
+#define PACKET_FLAG_CONFIG	BIT64(62)
+#define PACKET_FLAG_KEY_FRAME	BIT64(61)
+#define PACKET_PTS_MASK		(PACKET_FLAG_KEY_FRAME - 1)
 
 #define SOCKET_RETRIES		60
 #define SOCKET_RETRY_MS		250
@@ -86,7 +88,7 @@ int scrcpy_start(struct scrcpy *s, const struct scrcpy_config *cfg)
 		 "log_level=info video=true audio=false control=true tunnel_forward=true "
 		 "max_size=%u max_fps=%u video_bit_rate=%u video_codec=h264 "
 		 "send_device_meta=true send_frame_meta=true send_dummy_byte=true "
-		 "send_codec_meta=true clipboard_autosync=false",
+		 "send_stream_meta=true clipboard_autosync=false",
 		 REMOTE_JAR, cfg->version, scid, cfg->max_size, cfg->max_fps, cfg->bit_rate);
 	say(cfg, "starting the server");
 	ret = adb_open(s->adb, cmd, shell_sink, NULL, &s->shell);
@@ -116,23 +118,33 @@ int scrcpy_start(struct scrcpy *s, const struct scrcpy_config *cfg)
 		goto fail;
 	}
 
-	/* dummy byte, device name, codec id + size */
+	/* scrcpy v5+: dummy byte, 64B device name, 4B codec id, 12B session header */
+	uint8_t codec_id[4];
+
 	ret = adb_read(s->video, meta, 1, K_SECONDS(10));
 	if (ret == 0) {
 		ret = adb_read(s->video, s->device_name, 64, K_SECONDS(5));
 	}
 	if (ret == 0) {
-		ret = adb_read(s->video, meta, 12, K_SECONDS(5));
+		ret = adb_read(s->video, codec_id, sizeof(codec_id), K_SECONDS(5));
+	}
+	if (ret == 0) {
+		ret = adb_read(s->video, meta, sizeof(meta), K_SECONDS(10));
 	}
 	if (ret != 0) {
 		printk("scrcpy: no stream header: %d\n", ret);
 		goto fail;
 	}
 	s->device_name[64] = '\0';
+	if ((meta[0] & 0x80U) == 0U) {
+		printk("scrcpy: unexpected header (expected session packet, got %02x)\n", meta[0]);
+		ret = -EPROTO;
+		goto fail;
+	}
 	s->width = sys_get_be32(meta + 4);
 	s->height = sys_get_be32(meta + 8);
 	printk("scrcpy: %s, %ux%u, codec %.4s\n", s->device_name, s->width, s->height,
-	       (const char *)meta);
+	       (const char *)codec_id);
 
 	return 0;
 fail:
@@ -163,15 +175,24 @@ int scrcpy_read_packet(struct scrcpy *s, uint8_t *buf, size_t *size, int64_t *pt
 	uint32_t len;
 	int ret;
 
-	ret = adb_read(s->video, h, sizeof(h), K_FOREVER);
-	if (ret != 0) {
-		return ret;
+	while (true) {
+		ret = adb_read(s->video, h, sizeof(h), K_FOREVER);
+		if (ret != 0) {
+			return ret;
+		}
+		if ((h[0] & 0x80U) != 0U) {
+			s->width = sys_get_be32(h + 4);
+			s->height = sys_get_be32(h + 8);
+			printk("scrcpy: session %ux%u\n", s->width, s->height);
+			continue;
+		}
+		break;
 	}
 	pts = sys_get_be64(h);
 	len = sys_get_be32(h + 8);
 	*flags = ((pts & PACKET_FLAG_CONFIG) ? SCRCPY_PACKET_CONFIG : 0) |
 		 ((pts & PACKET_FLAG_KEY_FRAME) ? SCRCPY_PACKET_KEY : 0);
-	*pts_us = (int64_t)(pts & ~(PACKET_FLAG_CONFIG | PACKET_FLAG_KEY_FRAME));
+	*pts_us = (int64_t)(pts & PACKET_PTS_MASK);
 	if (len > *size) {
 		uint8_t skip[256];
 
