@@ -13,6 +13,9 @@
 //#include "time_api.h"
 #include <stdarg.h>
 #include "co_math.h"
+#ifdef __ZEPHYR__
+#include <zephyr/random/random.h>
+#endif
 
 #define TRACE 	aic_dbg
 #if 1
@@ -76,6 +79,10 @@ void os_daemonize_terminate(const char *pid_file)
 /* TODO: Check this is good enough */
 int os_get_random(unsigned char *buf, size_t len)
 {
+#ifdef __ZEPHYR__
+	sys_rand_get(buf, len);
+	return 0;
+#else
 	size_t i;
 	for (i = 0; i < len ; i++) {
 		#if 1
@@ -85,11 +92,16 @@ int os_get_random(unsigned char *buf, size_t len)
 		#endif
 	}
 	return 0;
+#endif
 }
 
 unsigned long os_random(void)
 {
+#ifdef __ZEPHYR__
+	return (unsigned long)sys_rand32_get();
+#else
 	return co_rand_word();
+#endif
 }
 #endif
 

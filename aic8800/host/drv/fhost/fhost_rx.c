@@ -1271,13 +1271,14 @@ int fhost_rx_data_resend(net_if_t *net_if, struct fhost_rx_buf_tag *buf,
         aic_dbg("net buf alloc fail\r\n");
         return -1;
     }
+    memcpy(p->payload, frame + payl_offset, buf->info.vect.frmlen - payl_offset);
     eth_hdr = (struct mac_eth_hdr *)(p->payload);
     MAC_ADDR_CPY(&eth_hdr->da, da);
     MAC_ADDR_CPY(&eth_hdr->sa, sa);
-    memcpy((p->payload + sizeof(*eth_hdr)), frame + payl_offset, buf->info.vect.frmlen - payl_offset);
 
     sent_pkt = get_net_tx_buf_pkt_hdr();
     if (!sent_pkt) {
+        pbuf_free(p);
         aic_dbg("%s get buf fail\n", __func__);
         return -1;
     }

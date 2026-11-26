@@ -1755,7 +1755,7 @@ void p2p_add_dev_info(struct p2p_data *p2p, const u8 *addr,
 
 void p2p_build_ssid(struct p2p_data *p2p, u8 *ssid, size_t *ssid_len)
 {
-#if !defined(PLATFORM_ALLWIN_FREERTOS)
+#if !defined(PLATFORM_ALLWIN_FREERTOS) || defined(__ZEPHYR__)
 	os_memcpy(ssid, P2P_WILDCARD_SSID, P2P_WILDCARD_SSID_LEN);
 	p2p_random((char *) &ssid[P2P_WILDCARD_SSID_LEN], 2);
 	os_memcpy(&ssid[P2P_WILDCARD_SSID_LEN + 2],

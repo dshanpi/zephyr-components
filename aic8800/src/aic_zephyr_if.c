@@ -294,7 +294,8 @@ static void scan_one(const struct aicz_scan_ap *ap, void *arg)
 	d->scan_cb(d->iface, 0, &res);
 }
 
-static int aicz_scan(const struct device *dev, struct wifi_scan_params *params, scan_result_cb_t cb)
+static int aicz_scan(const struct device *dev, struct net_if *iface, struct wifi_scan_params *params,
+		     scan_result_cb_t cb)
 {
 	struct aicz_data *d = &aicz;
 	int ret;
@@ -331,7 +332,8 @@ static void connect_work_fn(struct k_work *work)
 							       WIFI_STATUS_CONN_FAIL);
 }
 
-static int aicz_connect(const struct device *dev, struct wifi_connect_req_params *params)
+static int aicz_connect(const struct device *dev, struct net_if *iface,
+			struct wifi_connect_req_params *params)
 {
 	struct aicz_data *d = &aicz;
 
@@ -364,7 +366,7 @@ static int aicz_connect(const struct device *dev, struct wifi_connect_req_params
 	return 0;
 }
 
-static int aicz_disconnect(const struct device *dev)
+static int aicz_disconnect(const struct device *dev, struct net_if *iface)
 {
 	struct aicz_data *d = &aicz;
 	int ret = aicz_wifi_disconnect();
@@ -378,7 +380,8 @@ static int aicz_disconnect(const struct device *dev)
 	return ret == 0 ? 0 : -EIO;
 }
 
-static int aicz_iface_status(const struct device *dev, struct wifi_iface_status *status)
+static int aicz_iface_status(const struct device *dev, struct net_if *iface,
+			     struct wifi_iface_status *status)
 {
 	struct aicz_sta_info info;
 

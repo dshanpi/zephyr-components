@@ -990,7 +990,7 @@ static void wpa_rwnx_driver_process_disassoc_event(struct wpa_rwnx_driver_data *
 
 static void wpa_rwnx_driver_process_rx_eapol_event(struct wpa_rwnx_driver_data *drv, struct cfgrwnx_rx_eapol_event *event)
 {
-	if (!(drv->status & RWNX_ASSOCIATED)) {
+	if (!(drv->status & (RWNX_ASSOCIATED | RWNX_AP_STARTED))) {
 		aic_dbg("!!! EAPOL buffered status=0x%x\r\n", drv->status);
 		
 		if (drv->pending_eapol.payload)
