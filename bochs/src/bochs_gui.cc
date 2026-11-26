@@ -191,7 +191,7 @@ void bx_nogui_gui_c::handle_events(void)
 
 void bx_nogui_gui_c::flush(void)
 {
-  struct display_sunxi_rgb img;
+  struct display_sunxi_rgb img = {};
 
 #ifdef CONFIG_BOCHS_TEXT_MIRROR
   if (guest_textmode && txt_active) {

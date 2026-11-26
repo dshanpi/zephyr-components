@@ -27,7 +27,7 @@
 #include <zephyr/input/input.h>
 #endif
 
-#define STACK_SIZE	4096
+#define STACK_SIZE	16384
 #define PRIORITY	7
 
 K_THREAD_STACK_DEFINE(pad_stack, STACK_SIZE);

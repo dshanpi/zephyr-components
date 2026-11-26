@@ -30,7 +30,7 @@ static const struct device *const i2s = DEVICE_DT_GET(DT_NODELABEL(audio_codec))
 static const struct device *const ctl = DEVICE_DT_GET(DT_NODELABEL(codec_analog));
 
 K_MEM_SLAB_DEFINE_STATIC(slab, BLOCK_BYTES, SLAB_BLOCKS, 4);
-K_THREAD_STACK_DEFINE(audio_stack, 4096);
+K_THREAD_STACK_DEFINE(audio_stack, 8192);
 static struct k_thread thread;
 RING_BUF_DECLARE(ring, RING_BLOCKS * BLOCK_BYTES);
 
