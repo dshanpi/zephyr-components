@@ -24,6 +24,11 @@ static void audio_process(void *cls, raop_ntp_t *ntp, aac_decode_struct *data)
 
 static void video_process(void *cls, raop_ntp_t *ntp, h264_decode_struct *data)
 {
+	if (data->frame_type == 0 && app->geometry != NULL) {
+		app->geometry((uint32_t)data->n_gop_index, (uint32_t)data->n_frame_poc,
+			      (data->n_time_stamp >> 16) & 0xffffU, data->n_time_stamp & 0xffffU,
+			      app->arg);
+	}
 	if (app->video != NULL) {
 		app->video(data->data, data->data_len, data->pts, data->frame_type == 0, app->arg);
 	}

@@ -58,15 +58,16 @@ static void ui_build(void)
 	lv_obj_t *scr = lv_screen_active();
 	lv_obj_t *card = lv_obj_create(scr);
 
-	lv_obj_set_style_bg_opa(scr, LV_OPA_TRANSP, 0);
-	lv_obj_set_size(card, 640, 160);
+	lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+	lv_obj_set_size(card, 470, 110);
 	lv_obj_center(card);
 	lv_obj_set_style_bg_color(card, lv_color_make(250, 250, 252), 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(card, 24, 0);
+	lv_obj_set_style_radius(card, 16, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	status_label = lv_label_create(card);
-	lv_obj_set_style_text_font(status_label, &lv_font_montserrat_28, 0);
+	lv_obj_set_style_text_font(status_label, &lv_font_montserrat_20, 0);
 	lv_obj_set_style_text_color(status_label, lv_color_make(30, 32, 40), 0);
 	lv_obj_set_style_bg_color(status_label, lv_color_make(250, 250, 252), 0);
 	lv_obj_set_style_bg_opa(status_label, LV_OPA_COVER, 0);
@@ -125,6 +126,10 @@ static void wifi_load(char *ssid, char *psk)
 			if (nl != NULL) {
 				*nl = '\0';
 			}
+			size_t sl = strlen(ssid);
+			if (sl > 0 && ssid[sl - 1] == '\r') ssid[sl - 1] = '\0';
+			size_t pl = strlen(psk);
+			if (pl > 0 && psk[pl - 1] == '\r') psk[pl - 1] = '\0';
 		}
 	}
 	if (ssid[0] == '\0') {
@@ -173,23 +178,118 @@ static const struct device *const vdec_dev = DEVICE_DT_GET(DT_NODELABEL(ve));
 static const struct device *const disp = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
 
 static struct vdec_stream *stream;
-static struct vdec_frame shown, older;
 static uint32_t shown_count, packets, bytes, t_decode_us;
 static int64_t last_report;
 static K_MUTEX_DEFINE(video_lock);
 static bool too_big;
+static int active_conns;
+static uint8_t last_config[256];
+static size_t last_config_len;
 
+static K_MUTEX_DEFINE(disp_lock);
+static K_SEM_DEFINE(disp_sem, 0, 1);
+static K_SEM_DEFINE(disp_flushed, 0, 1);
+K_MSGQ_DEFINE(disp_done_q, sizeof(struct vdec_frame), 8, 4);
+static struct vdec_frame disp_pending;
+static bool disp_has_pending, disp_flush_req;
+static uint32_t mirror_src_w, mirror_src_h, mirror_dst_w, mirror_dst_h;
 
-static void release_frames(void)
+static void disp_thread_fn(void *a, void *b, void *c)
 {
-	if (older.priv != NULL) {
-		vdec_frame_release(vdec_dev, &older);
+	struct vdec_frame shown = {0}, older = {0};
+
+	ARG_UNUSED(a);
+	ARG_UNUSED(b);
+	ARG_UNUSED(c);
+	while (true) {
+		struct vdec_frame f;
+		bool do_flush = false, have_frame = false;
+
+		int wret = k_sem_take(&disp_sem, older.priv != NULL ? K_MSEC(20) : K_FOREVER);
+		k_mutex_lock(&disp_lock, K_FOREVER);
+		if (disp_flush_req) {
+			if (disp_has_pending) {
+				k_msgq_put(&disp_done_q, &disp_pending, K_FOREVER);
+				memset(&disp_pending, 0, sizeof(disp_pending));
+				disp_has_pending = false;
+			}
+			disp_flush_req = false;
+			do_flush = true;
+		} else if (disp_has_pending) {
+			f = disp_pending;
+			memset(&disp_pending, 0, sizeof(disp_pending));
+			disp_has_pending = false;
+			have_frame = true;
+		}
+		k_mutex_unlock(&disp_lock);
+
+		if (do_flush) {
+			display_sunxi_hide_yuv(disp);
+			k_msleep(35);
+			if (older.priv != NULL) {
+				k_msgq_put(&disp_done_q, &older, K_FOREVER);
+				memset(&older, 0, sizeof(older));
+			}
+			if (shown.priv != NULL) {
+				k_msgq_put(&disp_done_q, &shown, K_FOREVER);
+				memset(&shown, 0, sizeof(shown));
+			}
+			k_sem_give(&disp_flushed);
+			continue;
+		}
+		if (!have_frame) {
+			if (wret == -EAGAIN && older.priv != NULL) {
+				k_msgq_put(&disp_done_q, &older, K_FOREVER);
+				memset(&older, 0, sizeof(older));
+			}
+			continue;
+		}
+		uint32_t cw = 0, ch = 0;
+
+		k_mutex_lock(&disp_lock, K_FOREVER);
+		if (mirror_dst_w >= 160U && mirror_dst_h >= 160U &&
+		    mirror_dst_w <= f.width && mirror_dst_h <= f.height &&
+		    (mirror_dst_w < f.width || mirror_dst_h < f.height)) {
+			cw = mirror_dst_w;
+			ch = mirror_dst_h;
+		} else if (mirror_src_w >= 160U && mirror_src_h >= 160U &&
+			   mirror_src_w <= f.width && mirror_src_h <= f.height &&
+			   (mirror_src_w < f.width || mirror_src_h < f.height)) {
+			cw = mirror_src_w;
+			ch = mirror_src_h;
+		}
+		k_mutex_unlock(&disp_lock);
+		struct display_sunxi_yuv yuv = {
+			.y = f.plane[0],
+			.uv = f.plane[1],
+			.width = f.width,
+			.height = f.height,
+			.crop_width = cw,
+			.crop_height = ch,
+			.stride_y = f.stride[0],
+			.stride_uv = f.stride[1],
+			.bt709 = true,
+			.nonblock = true,
+		};
+
+		display_sunxi_show_yuv(disp, &yuv);
+		if (older.priv != NULL) {
+			k_msgq_put(&disp_done_q, &older, K_FOREVER);
+		}
+		older = shown;
+		shown = f;
 	}
-	if (shown.priv != NULL) {
-		vdec_frame_release(vdec_dev, &shown);
+}
+
+K_THREAD_DEFINE(ios_disp_thread, 8192, disp_thread_fn, NULL, NULL, NULL, 7, 0, 0);
+
+static void reclaim_done(void)
+{
+	struct vdec_frame done;
+
+	while (k_msgq_get(&disp_done_q, &done, K_NO_WAIT) == 0) {
+		vdec_frame_release(vdec_dev, &done);
 	}
-	memset(&older, 0, sizeof(older));
-	memset(&shown, 0, sizeof(shown));
 }
 
 static int stream_open(void)
@@ -197,7 +297,7 @@ static int stream_open(void)
 	const struct vdec_stream_config cfg = {
 		.codec = VDEC_CODEC_H264,
 		.format = VDEC_FORMAT_NV12,
-		.buffer_size = 512 * 1024,
+		.buffer_size = 256 * 1024,
 		.no_cache_ops = true,
 		/* the phone's stream keeps several reference pictures; the pictures are small */
 		.holding_frames = CONFIG_SAMPLE_IOS_HOLD_FRAMES,
@@ -209,9 +309,12 @@ static int stream_open(void)
 static void stream_close(void)
 {
 	if (stream != NULL) {
-		/* the pictures must not be on the screen when they are given back */
-		display_sunxi_hide_yuv(disp);
-		release_frames();
+		k_mutex_lock(&disp_lock, K_FOREVER);
+		disp_flush_req = true;
+		k_mutex_unlock(&disp_lock);
+		k_sem_give(&disp_sem);
+		k_sem_take(&disp_flushed, K_FOREVER);
+		reclaim_done();
 		vdec_stream_close(vdec_dev, stream);
 		stream = NULL;
 	}
@@ -219,34 +322,61 @@ static void stream_close(void)
 	shown_count = 0;
 }
 
+static bool drop_pending(void)
+{
+	struct vdec_frame dropped = {0};
+
+	k_mutex_lock(&disp_lock, K_FOREVER);
+	if (disp_has_pending) {
+		dropped = disp_pending;
+		memset(&disp_pending, 0, sizeof(disp_pending));
+		disp_has_pending = false;
+	}
+	k_mutex_unlock(&disp_lock);
+	if (dropped.priv != NULL) {
+		vdec_frame_release(vdec_dev, &dropped);
+		return true;
+	}
+
+	return false;
+}
+
 static void drain(void)
 {
 	struct vdec_frame f;
 	int ret;
 
-	while ((ret = vdec_stream_get_frame(vdec_dev, stream, &f)) == 0) {
-		struct display_sunxi_yuv yuv = {
-			.y = f.plane[0],
-			.uv = f.plane[1],
-			.width = f.width,
-			.height = f.height,
-			.stride_y = f.stride[0],
-			.stride_uv = f.stride[1],
-			.bt709 = true,
-			.nonblock = true,
-		};
-
-		display_sunxi_show_yuv(disp, &yuv);
-		/* the picture before the last may still be scanned out */
-		if (older.priv != NULL) {
-			vdec_frame_release(vdec_dev, &older);
+	reclaim_done();
+	while (true) {
+		ret = vdec_stream_get_frame(vdec_dev, stream, &f);
+		if (ret == -EBUSY) {
+			reclaim_done();
+			if (drop_pending()) {
+				continue;
+			}
+			break;
 		}
-		older = shown;
-		shown = f;
+		if (ret != 0) {
+			break;
+		}
+		struct vdec_frame dropped = {0};
+
+		k_mutex_lock(&disp_lock, K_FOREVER);
+		if (disp_has_pending) {
+			dropped = disp_pending;
+		}
+		disp_pending = f;
+		disp_has_pending = true;
+		k_mutex_unlock(&disp_lock);
+		if (dropped.priv != NULL) {
+			vdec_frame_release(vdec_dev, &dropped);
+		}
+		k_sem_give(&disp_sem);
 		if (shown_count++ == 0U) {
 			printk("ios: first picture %ux%u\n", f.width, f.height);
 			status("");
 		}
+		reclaim_done();
 	}
 	if (ret == -EBUSY) {
 		static int64_t last;
@@ -363,7 +493,12 @@ static void on_video(const uint8_t *data, size_t size, uint64_t pts_us, bool con
 
 	k_mutex_lock(&video_lock, K_FOREVER);
 	if (config) {
-		unsigned int w, h, refs;
+		unsigned int w = 0, h = 0, refs = 0;
+
+		if (size <= sizeof(last_config)) {
+			memcpy(last_config, data, size);
+			last_config_len = size;
+		}
 
 		too_big = false;
 		if (read_sps(data, size, &w, &h, &refs)) {
@@ -391,9 +526,29 @@ static void on_video(const uint8_t *data, size_t size, uint64_t pts_us, bool con
 		/* a new SPS: the picture size may have changed */
 		stream_close();
 	}
-	if (stream == NULL && stream_open() != 0) {
-		printk("ios: cannot open the decoder\n");
-		goto out;
+	if (stream == NULL) {
+		if (stream_open() != 0) {
+			printk("ios: cannot open the decoder\n");
+			goto out;
+		}
+		if (!config && last_config_len > 0U) {
+			size_t coff = 0;
+
+			while (coff < last_config_len) {
+				size_t cused = 0;
+				int cret = vdec_stream_feed(vdec_dev, stream, last_config + coff,
+							    last_config_len - coff, -1, &cused);
+
+				if (cret == 0) {
+					coff += cused;
+				} else if (cret == -EAGAIN) {
+					drain();
+					k_msleep(1);
+				} else {
+					break;
+				}
+			}
+		}
 	}
 	c0 = k_cycle_get_32();
 	int stuck = 0;
@@ -417,6 +572,25 @@ static void on_video(const uint8_t *data, size_t size, uint64_t pts_us, bool con
 			break;
 		}
 	}
+	if (!config && off == size) {
+		static const uint8_t aud[6] = {0x00, 0x00, 0x00, 0x01, 0x09, 0x10};
+		size_t aoff = 0;
+
+		while (aoff < sizeof(aud)) {
+			size_t used = 0;
+			int ret = vdec_stream_feed(vdec_dev, stream, aud + aoff, sizeof(aud) - aoff,
+						   (int64_t)pts_us, &used);
+
+			if (ret == 0) {
+				aoff += used;
+			} else if (ret == -EAGAIN) {
+				drain();
+				k_msleep(1);
+			} else {
+				break;
+			}
+		}
+	}
 	drain();
 	t_decode_us += (uint32_t)k_cyc_to_us_floor64(k_cycle_get_32() - c0);
 	packets++;
@@ -436,22 +610,53 @@ out:
 
 static void on_connection(bool up, void *arg)
 {
-	printk("ios: phone %s\n", up ? "connected" : "disconnected");
-	if (!up) {
-		k_mutex_lock(&video_lock, K_FOREVER);
-		stream_close();
-		shown_count = 0;
-		k_mutex_unlock(&video_lock);
+	bool all_closed = false;
+
+	k_mutex_lock(&video_lock, K_FOREVER);
+	if (up) {
+		active_conns++;
+	} else if (active_conns > 0) {
+		active_conns--;
+		if (active_conns == 0) {
+			stream_close();
+			last_config_len = 0;
+			shown_count = 0;
+			k_mutex_lock(&disp_lock, K_FOREVER);
+			mirror_src_w = mirror_src_h = mirror_dst_w = mirror_dst_h = 0;
+			k_mutex_unlock(&disp_lock);
+			all_closed = true;
+		}
+	}
+	printk("ios: phone %s (conns=%d)\n", up ? "connected" : "disconnected", active_conns);
+	k_mutex_unlock(&video_lock);
+	if (all_closed) {
 		status("Waiting for the phone");
 	}
+}
+
+static void on_geometry(uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h,
+			void *arg)
+{
+	ARG_UNUSED(arg);
+	k_mutex_lock(&disp_lock, K_FOREVER);
+	mirror_src_w = src_w;
+	mirror_src_h = src_h;
+	mirror_dst_w = dst_w;
+	mirror_dst_h = dst_h;
+	k_mutex_unlock(&disp_lock);
 }
 
 static void on_flush(void *arg)
 {
 	k_mutex_lock(&video_lock, K_FOREVER);
 	stream_close();
+	last_config_len = 0;
 	shown_count = 0;
+	k_mutex_lock(&disp_lock, K_FOREVER);
+	mirror_src_w = mirror_src_h = mirror_dst_w = mirror_dst_h = 0;
+	k_mutex_unlock(&disp_lock);
 	k_mutex_unlock(&video_lock);
+	status("Waiting for the phone");
 }
 
 int main(void)
@@ -460,6 +665,7 @@ int main(void)
 		.name = CONFIG_IOS_MIRROR_NAME,
 		.port = CONFIG_IOS_MIRROR_PORT,
 		.video = on_video,
+		.geometry = on_geometry,
 		.connection = on_connection,
 		.flush = on_flush,
 	};

@@ -29,6 +29,8 @@ struct airplay_config {
 	void (*video)(const uint8_t *data, size_t size, uint64_t pts_us, bool config, void *arg);
 	/** An iPhone connected (true) or went away (false) */
 	void (*connection)(bool up, void *arg);
+	/** Active video dimensions from the AirPlay SPS header (optional) */
+	void (*geometry)(uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h, void *arg);
 	/** The phone stopped mirroring: the picture should go */
 	void (*flush)(void *arg);
 	void *arg;

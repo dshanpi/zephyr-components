@@ -30,7 +30,22 @@ string(REPLACE "plist_new_uint(1920)" "plist_new_uint(${CONFIG_IOS_MIRROR_WIDTH}
 string(REPLACE "plist_new_uint(1080)" "plist_new_uint(${CONFIG_IOS_MIRROR_HEIGHT})"
        RAOP_HANDLERS "${RAOP_HANDLERS}")
 file(WRITE ${GEN}/raop_handlers.h "${RAOP_HANDLERS}")
-configure_file(${RP}/raop.c ${GEN}/raop.c COPYONLY)
+file(READ ${RP}/raop.c RAOP_C)
+string(REPLACE
+  "raop_rtp_mirror_destroy(conn->raop_rtp_mirror);\n    }\n\n    conn->raop->callbacks.video_flush(conn->raop->callbacks.cls);"
+  "raop_rtp_mirror_destroy(conn->raop_rtp_mirror);\n        conn->raop->callbacks.video_flush(conn->raop->callbacks.cls);\n    }"
+  RAOP_C "${RAOP_C}")
+file(WRITE ${GEN}/raop.c "${RAOP_C}")
+file(READ ${RP}/raop_rtp_mirror.c RAOP_MIRROR_C)
+string(REPLACE
+  "logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG, \"raop_rtp_mirror width_source = %f height_source = %f width = %f height = %f\",\n                           width_source, height_source, width, height);"
+  "logger_log(raop_rtp_mirror->logger, LOGGER_INFO, \"raop_rtp_mirror src=%dx%d dst=%dx%d\", (int)width_source, (int)height_source, (int)width, (int)height);"
+  RAOP_MIRROR_C "${RAOP_MIRROR_C}")
+string(REPLACE
+  "h264_data.frame_type = 0;\n                    h264_data.pts = 0;"
+  "h264_data.frame_type = 0;\n                    h264_data.pts = 0;\n                    h264_data.n_gop_index = (int)width_source;\n                    h264_data.n_frame_poc = (int)height_source;\n                    h264_data.n_time_stamp = (((unsigned int)(int)width & 0xffffU) << 16) | ((unsigned int)(int)height & 0xffffU);"
+  RAOP_MIRROR_C "${RAOP_MIRROR_C}")
+file(WRITE ${GEN}/raop_rtp_mirror.c "${RAOP_MIRROR_C}")
 
 set(RP_SOURCES
   ${RP}/byteutils.c
@@ -46,7 +61,7 @@ set(RP_SOURCES
   ${RP}/raop_buffer.c
   ${RP}/raop_ntp.c
   ${RP}/raop_rtp.c
-  ${RP}/raop_rtp_mirror.c
+  ${GEN}/raop_rtp_mirror.c
   ${RP}/utils.c
   ${RP}/playfair/hand_garble.c
   ${RP}/playfair/modified_md5.c
