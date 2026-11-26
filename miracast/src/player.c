@@ -12,7 +12,7 @@
 #include <zephyr/sys/printk.h>
 #include <miracast/player.h>
 
-#define VIDEO_MAX (512 * 1024)
+#define VIDEO_MAX (160 * 1024)
 #define PCM_BLOCK 1920
 
 struct packet {
@@ -22,8 +22,8 @@ struct packet {
 	uint8_t data[];
 };
 
-K_MSGQ_DEFINE(wfd_video_q, sizeof(struct packet *), 6, sizeof(void *));
-K_MSGQ_DEFINE(wfd_audio_q, sizeof(struct packet *), 24, sizeof(void *));
+K_MSGQ_DEFINE(wfd_video_q, sizeof(struct packet *), 32, sizeof(void *));
+K_MSGQ_DEFINE(wfd_audio_q, sizeof(struct packet *), 32, sizeof(void *));
 K_MEM_SLAB_DEFINE_STATIC(pcm_slab, PCM_BLOCK, 8, 4);
 static K_SEM_DEFINE(video_stopped, 0, 1);
 static K_SEM_DEFINE(audio_stopped, 0, 1);
@@ -58,7 +58,7 @@ static int64_t presentation(int64_t pts)
 
 	if (!clock_valid) {
 		clock_pts = pts;
-		clock_ms = now + 120;
+		clock_ms = now + 35;
 		clock_valid = true;
 	}
 	/* Signed distance in the 33-bit PTS clock, including wrap. */
@@ -69,9 +69,9 @@ static int64_t presentation(int64_t pts)
 	}
 	int64_t target = clock_ms + delta / 90;
 
-	if (target > now + 2000 || target < now - 2000) {
+	if (target > now + 150 || target < now - 150) {
 		clock_pts = pts;
-		clock_ms = target = now + 120;
+		clock_ms = target = now + 35;
 	}
 	k_spin_unlock(&clock_lock, key);
 	return target;
@@ -149,13 +149,12 @@ static int drain(void)
 	int count = 0;
 
 	while (vdec_stream_get_frame(ve, stream, &f) == 0) {
-		int64_t target = presentation(f.pts);
+		uint32_t queued = k_msgq_num_used_get(&wfd_video_q);
 
-		if (atomic_get(&stopping) || target < k_uptime_get() - 150) {
+		if (atomic_get(&stopping) || queued >= 6) {
 			vdec_frame_release(ve, &f);
 			continue;
 		}
-		wait_until(target);
 		struct display_sunxi_yuv yuv = {
 			.y = f.plane[0], .uv = f.plane[1], .width = f.width, .height = f.height,
 			.stride_y = f.stride[0], .stride_uv = f.stride[1],
@@ -247,7 +246,6 @@ static void video_run(void *a, void *b, void *c)
 			continue;
 		}
 		if (pkt->discontinuity || pkt->len > VIDEO_MAX - len) {
-			video_close();
 			len = 0;
 			keyframe = true;
 			miracast_receiver_request_idr();
@@ -261,13 +259,17 @@ static void video_run(void *a, void *b, void *c)
 		}
 		memcpy(buf + len, pkt->data, pkt->len);
 		len += pkt->len;
+		static const uint8_t aud_nal[6] = {0x00, 0x00, 0x00, 0x01, 0x09, 0x10};
 		size_t pos = start_code(buf, len, 0);
+		bool fed_slice = false;
 
 		while (pos < len) {
 			size_t prefix = buf[pos + 2] == 1 ? 3 : 4;
+			if (pos + prefix >= len) {
+				break;
+			}
 			size_t next = start_code(buf, len, pos + prefix);
-
-			if (next == len || pos + prefix == next) {
+			if (pos + prefix == next) {
 				break;
 			}
 			unsigned type = buf[pos + prefix] & 31;
@@ -282,35 +284,45 @@ static void video_run(void *a, void *b, void *c)
 				pps_len = size;
 			}
 			if (keyframe && type == 5 && sps_len && pps_len) {
-				struct vdec_stream_config config = {
-					.codec = VDEC_CODEC_H264, .format = VDEC_FORMAT_NV12,
-					.buffer_size = VIDEO_MAX, .no_cache_ops = true,
-					.holding_frames = 2,
-				};
+				if (!stream) {
+					struct vdec_stream_config config = {
+						.codec = VDEC_CODEC_H264, .format = VDEC_FORMAT_NV12,
+						.buffer_size = VIDEO_MAX, .no_cache_ops = true,
+						.holding_frames = 2,
+					};
 
-				ret = vdec_stream_open(ve, &config, &stream);
+					ret = vdec_stream_open(ve, &config, &stream);
+				}
 				if (!ret) ret = feed(sps, sps_len, pts);
 				if (!ret) ret = feed(pps, pps_len, pts);
 				if (!ret) keyframe = false;
 			}
-			if (!ret && !keyframe && (type == 1 || type == 5 || type == 7 || type == 8)) {
+			if (!ret && !keyframe && (type == 1 || type == 5 || type == 7 || type == 8 || type == 9)) {
 				ret = feed(buf + pos, size, pts);
+				if (!ret && (type == 1 || type == 5)) {
+					fed_slice = true;
+				}
 			}
+			if (ret) {
+				printk("miracast video: %d, waiting for IDR\n", ret);
+				video_close();
+				keyframe = true;
+				fed_slice = false;
+				miracast_receiver_request_idr();
+			}
+			pos = next;
+			pts = pkt->pts;
+		}
+		if (fed_slice && stream && !keyframe) {
+			int ret = feed(aud_nal, sizeof(aud_nal), pts);
 			if (ret) {
 				printk("miracast video: %d, waiting for IDR\n", ret);
 				video_close();
 				keyframe = true;
 				miracast_receiver_request_idr();
 			}
-			pos = next;
-			pts = pkt->pts;
 		}
-		if (pos == len) {
-			/* Preserve a possible split start code. */
-			pos = len > 3 ? len - 3 : 0;
-		}
-		memmove(buf, buf + pos, len - pos);
-		len -= pos;
+		len = 0;
 		free(pkt);
 	}
 }

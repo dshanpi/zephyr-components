@@ -283,46 +283,50 @@ static int receive(struct miracast_session *s, int rtp, int rtcp, uint8_t *buf)
 			if (!(fds[i].revents & (ZSOCK_POLLIN | ZSOCK_POLLHUP))) {
 				continue;
 			}
-			struct sockaddr_in from;
-			socklen_t from_len = sizeof(from);
-			ssize_t n = i == 0 ? zsock_recv(control, buf, 2048, ZSOCK_MSG_DONTWAIT) :
-				zsock_recvfrom(fds[i].fd, buf, 65536, ZSOCK_MSG_DONTWAIT,
-					       (struct sockaddr *)&from, &from_len);
+			int limit = (i == 1) ? 32 : 1;
 
-			if (n < 0) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-					continue;
-				}
-				return -errno;
-			}
-			if (i == 0) {
-				if (n == 0) {
-					return -ECONNRESET;
-				}
-				last_control = k_uptime_get();
-				ret = miracast_rtsp(s, buf, n);
-				if (ret) {
-					return ret;
-				}
-			} else if (from_len == sizeof(from) && from.sin_family == AF_INET &&
-				   from.sin_addr.s_addr == peer.sin_addr.s_addr) {
-				if (i == 1) {
-					if (s->server_rtp && ntohs(from.sin_port) != s->server_rtp) {
-						continue;
+			for (int burst = 0; burst < limit && !atomic_get(&stopping); burst++) {
+				struct sockaddr_in from;
+				socklen_t from_len = sizeof(from);
+				ssize_t n = i == 0 ? zsock_recv(control, buf, 2048, ZSOCK_MSG_DONTWAIT) :
+					zsock_recvfrom(fds[i].fd, buf, 4096, ZSOCK_MSG_DONTWAIT,
+						       (struct sockaddr *)&from, &from_len);
+
+				if (n < 0) {
+					if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+						break;
 					}
-					ret = miracast_rtp(s, buf, n);
-					if (ret && ret != -EBADMSG) {
+					return -errno;
+				}
+				if (i == 0) {
+					if (n == 0) {
+						return -ECONNRESET;
+					}
+					last_control = k_uptime_get();
+					ret = miracast_rtsp(s, buf, n);
+					if (ret) {
 						return ret;
 					}
-					if (!ret && s->state == MIRACAST_PLAYING) {
-						reception_rtp(&reception, buf, n, &from, s->server_rtcp);
-					}
-				} else {
-					if (s->server_rtcp && ntohs(from.sin_port) != s->server_rtcp) {
-						continue;
-					}
-					if (reception_rtcp(&reception, buf, n, &from)) {
-						mc_state(s, MIRACAST_CLOSED);
+				} else if (from_len == sizeof(from) && from.sin_family == AF_INET &&
+					   from.sin_addr.s_addr == peer.sin_addr.s_addr) {
+					if (i == 1) {
+						if (s->server_rtp && ntohs(from.sin_port) != s->server_rtp) {
+							continue;
+						}
+						ret = miracast_rtp(s, buf, n);
+						if (ret && ret != -EBADMSG) {
+							return ret;
+						}
+						if (!ret && s->state == MIRACAST_PLAYING) {
+							reception_rtp(&reception, buf, n, &from, s->server_rtcp);
+						}
+					} else {
+						if (s->server_rtcp && ntohs(from.sin_port) != s->server_rtcp) {
+							continue;
+						}
+						if (reception_rtcp(&reception, buf, n, &from)) {
+							mc_state(s, MIRACAST_CLOSED);
+						}
 					}
 				}
 			}
@@ -358,7 +362,7 @@ static int receive(struct miracast_session *s, int rtp, int rtcp, uint8_t *buf)
 		}
 		if ((s->need_idr || atomic_get(&idr_requested)) &&
 		    s->state == MIRACAST_PLAYING && s->pending == MC_NONE &&
-		    now - last_idr >= 1000) {
+		    now - last_idr >= 300) {
 			atomic_clear(&idr_requested);
 			ret = miracast_request_idr(s);
 			if (!ret) {
@@ -379,7 +383,7 @@ static void run(void *a, void *b, void *c)
 		k_sem_take(&started, K_FOREVER);
 		struct miracast_ops ops = {.send = send_rtsp, .media = media, .state = state};
 		struct miracast_session *s = miracast_create(&cfg.stream, &ops);
-		uint8_t *buf = malloc(65536);
+		uint8_t *buf = malloc(4096);
 		int ret = -ENOMEM, rtp = -1, rtcp = -1;
 
 		state(NULL, MIRACAST_NEGOTIATING);

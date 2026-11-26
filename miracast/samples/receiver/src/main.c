@@ -35,7 +35,8 @@ int main(void)
 		printk("Miracast: display, decoder or audio device is not ready\n");
 		return -ENODEV;
 	}
-	lv_obj_set_style_bg_opa(lv_screen_active(), LV_OPA_TRANSP, 0);
+	lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(lv_screen_active(), LV_OPA_COVER, 0);
 	lv_obj_t *label = lv_label_create(lv_screen_active());
 
 	lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
